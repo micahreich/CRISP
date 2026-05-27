@@ -299,6 +299,10 @@ public:
         return xIterate_;
     }
 
+    vector_t getSolutionSilent() {
+        return xIterate_;
+    }
+
     void saveResults(const std::string& folderPrefix) {
         // // Get the current time as a unique identifier
         // std::time_t t = std::time(nullptr);

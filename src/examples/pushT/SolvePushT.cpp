@@ -1,5 +1,10 @@
 #include "solver_core/SolverInterface.h"
+#include <algorithm>
 #include <chrono>
+#include <fstream>
+#include <iomanip>
+#include <sstream>
+#include <stdexcept>
 #include "math.h"
 
 using namespace CRISP;
@@ -16,6 +21,28 @@ const scalar_t dt = 0.05;
 const size_t N = 50; // number of time steps
 const size_t num_state = 19;
 const size_t num_control = 10;
+
+void saveTrajectoryToTextFile(const Eigen::VectorXd& x, size_t steps, size_t stepWidth, const std::string& fileName) {
+    if (x.size() != static_cast<int>(steps * stepWidth)) {
+        throw std::runtime_error("Trajectory size does not match steps * stepWidth.");
+    }
+
+    std::ofstream outFile(fileName);
+    if (!outFile.is_open()) {
+        throw std::runtime_error("Unable to open file for writing: " + fileName);
+    }
+
+    outFile.precision(17);
+    for (size_t i = 0; i < steps; ++i) {
+        for (size_t j = 0; j < stepWidth; ++j) {
+            outFile << x[i * stepWidth + j];
+            if (j + 1 < stepWidth) {
+                outFile << " ";
+            }
+        }
+        outFile << "\n";
+    }
+}
 
 // define the dynamics constraints
 ad_function_t pushTDynamicConstraints = [](const ad_vector_t& x, ad_vector_t& y) {
@@ -342,28 +369,90 @@ int main(){
     vector_t xFinalStates(4);
     vector_t xInitialGuess(variableNum);
     vector_t xOptimal(variableNum);
-    // define a theta from 0 to 2pi, and define different final state for the problem with equal interval, for example 20 degree
-    // xInitialStates << 0, 0, 1, 0;
-    xInitialStates << 0.24722, 0.0141359, cos(-2.95844),sin(-2.95844);
-    // set random initial guess beteween -0.01 and 0.01
+    xFinalStates << 0.01, 0.01, std::cos(0.01), std::sin(0.01);
+    // zero initial guess
     xInitialGuess.setZero();
-    // xInitialGuess.setRandom();
-    // xInitialGuess = 0.001 * xInitialGuess;
-    // xInitialGuess.setZero();
     SolverParameters params;
     SolverInterface solver(pushTProblem, params);
-    // feel free to change the hyperparameters for the solver to obtain different performance
-    solver.setHyperParameters("WeightedMode", vector_t::Constant(1, 1));
+    // Suggestions:
+    //
+    // 1. Weighted mode may improve convergence, but it may also require more iterations sometimes.
+    //    It is worth trying when some groups converge to infeasible solutions.
+    //
+    // 2. For this problem, an extremely small constraint violation may not be necessary.
+    //    A small violation usually only appears in one or two constraints, and the whole
+    //    trajectory remains smooth without abrupt jumps. Therefore, it can still work well
+    //    when combined with MPC. The user can verify this through visualization by running:
+    //    python3 src/examples/pushT/visualize_pushT.py --batch --show-contact
+    //    after obtaining the solution. 
+
+    //
+    // 3. During an outer loop, the constraints may already be satisfied, but the solver may
+    //    continue taking extra iterations to further reduce the objective. At this point,
+    //    the objective is often already small enough, and the T block is already close to
+    //    the target. If computation speed is important, the user can terminate the solver
+    //    early once the constraints are satisfied and the objective is sufficiently low.
+    //    This can be confirmed by openning verbose mode.
+
+    // solver.setHyperParameters("WeightedMode", vector_t::Constant(1, 1));
     // solver.setHyperParameters("mu", vector_t::Constant(1, 1));
     solver.setHyperParameters("trailTol", vector_t::Constant(1, 1e-3));
     solver.setHyperParameters("trustRegionTol", vector_t::Constant(1, 1e-3));
     solver.setHyperParameters("constraintTol", vector_t::Constant(1, 1e-3));
-    // solver.setHyperParameters("verbose", vector_t::Constant(1, 1));
-    xFinalStates << 0.036, -0.143, cos(-2.637), sin(-2.637);
-    solver.setProblemParameters("pushTInitialConstraints", xInitialStates);
+    solver.setHyperParameters("verbose", vector_t::Constant(1, 0));
+
+    const size_t numSegments = 50;
+    const scalar_t radius_min = 0.25;
+    const scalar_t radius_max = 0.5;
+
     solver.setProblemParameters("pushTObjective", xFinalStates);
+    // initialize once, then reuse solver with resetProblem for subsequent segments
     solver.initialize(xInitialGuess);
-    solver.solve();
-    xOptimal = solver.getSolution();
-    std::cout << "Finish solving the problem with final state: " << xFinalStates.transpose() << std::endl;
+    size_t lastStepIdx = (N - 1) * (num_state + num_control);
+    for (size_t seg = 0; seg < numSegments; ++seg) {
+        scalar_t angle = static_cast<scalar_t>(2.0 * M_PI * static_cast<scalar_t>(seg) / static_cast<scalar_t>(numSegments));
+        scalar_t radius = radius_min;
+        if (numSegments > 1) {
+            radius += (radius_max - radius_min) * static_cast<scalar_t>(seg) / static_cast<scalar_t>(numSegments - 1);
+        }
+        xInitialStates << radius * std::cos(angle),
+                          radius * std::sin(angle),
+                          std::cos(angle),
+                          std::sin(angle);
+
+        solver.setProblemParameters("pushTInitialConstraints", xInitialStates);
+        if (seg > 0) {
+            solver.resetProblem(xInitialGuess);
+        }
+        auto segmentStart = std::chrono::high_resolution_clock::now();
+        solver.solve();
+        auto segmentEnd = std::chrono::high_resolution_clock::now();
+        xOptimal = solver.getSolutionSilent();
+
+        const scalar_t finalX = xOptimal[lastStepIdx + 0];
+        const scalar_t finalY = xOptimal[lastStepIdx + 1];
+        const scalar_t targetX = xFinalStates[0];
+        const scalar_t targetY = xFinalStates[1];
+        const scalar_t solveTimeMs = static_cast<scalar_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(segmentEnd - segmentStart).count()
+        );
+        const scalar_t finalRadius = std::sqrt(finalX * finalX + finalY * finalY);
+        const scalar_t targetRadius = std::sqrt(targetX * targetX + targetY * targetY);
+        const scalar_t radiusErrorAbs = std::abs(finalRadius - targetRadius);
+        const scalar_t posError = std::sqrt((finalX - targetX) * (finalX - targetX) + (finalY - targetY) * (finalY - targetY));
+
+        std::cout << "seg " << (seg + 1) << "/" << numSegments << " final_error | solve_time_ms: " << solveTimeMs
+                  << " pos_error: " << posError
+                  << " radius_error_abs: " << radiusErrorAbs
+                  << std::endl;
+
+        std::ostringstream segFileName;
+        segFileName << "pushT_solution_seg_" << std::setw(2) << std::setfill('0') << seg << ".txt";
+        saveTrajectoryToTextFile(xOptimal, N, num_state + num_control, segFileName.str());
+
+        if (seg == 0) {
+            const std::string defaultTrajectoryFile = "pushT_solution.txt";
+            saveTrajectoryToTextFile(xOptimal, N, num_state + num_control, defaultTrajectoryFile);
+        }
     }
+}

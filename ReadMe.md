@@ -100,6 +100,7 @@ Install the CppAD repository:
     make install
 ```
 #### CppADCodeGen
+Navigate back to the `./src/third_party` directory
 Install the CppADCodeGen repository:
 ```sh
     git clone https://github.com/joaoleal/CppADCodeGen.git
@@ -113,9 +114,11 @@ Install the CppADCodeGen repository:
 
 
 #### PIQP
+Navigate back to the `./src/third_party` directory
 Install the PIQP repository:
 ```sh
     git clone https://github.com/PREDICT-EPFL/piqp.git
+    cd piqp
     git checkout v0.5.0 
     (the latest version has unknown incompatiablity with Eigen)
     cd piqp
