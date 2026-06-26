@@ -214,7 +214,7 @@ public:
             costHistory_.push_back(obj_);
             if (solverParameters_.getParameters("verbose")(0) > 0) {
                 std::cout << "Iteration: " << currentIterate_ << " Objective: " << obj_ << " Merit: " << phi_ << " Trust region: " << trustRegionRadius_ << std::endl;
-                std::cout << "Equality violation: " << eqValues_.array().abs().maxCoeff() << " Inequality violation: " << (-ineqValues_).array().maxCoeff() << std::endl;
+                std::cout << "Equality violation: " << maxEqualityViolation(eqValues_) << " Inequality violation: " << maxInequalityViolation(ineqValues_) << std::endl;
             }
             // construct the subproblem
             constructSubproblem(objJac_, objHessCSR_, eqValues_, ineqValues_, eqJacCSR_, ineqJacCSR_);
@@ -294,7 +294,7 @@ public:
         std::cout << "Optimization problem:" << problemName_ << " solved in " << currentIterate_ << " iterations." << std::endl;
         std::cout << "Solver time: " << time_total << "ms" << std::endl;
         std::cout << "QP solver time: " << time_qp/1000 << "ms" << std::endl;
-        std::cout << "max constraint violation: equality: " << eqValues_.array().abs().maxCoeff() << " inequality: " << (-ineqValues_).array().maxCoeff() << std::endl;
+        std::cout << "max constraint violation: equality: " << maxEqualityViolation(eqValues_) << " inequality: " << maxInequalityViolation(ineqValues_) << std::endl;
         std::cout << "obj from " << costHistory_[0] << " to " << costHistory_.back() << std::endl;
         return xIterate_;
     }
@@ -360,6 +360,14 @@ public:
     }
 
 private:
+    scalar_t maxEqualityViolation(const vector_t& values) const {
+        return values.size() == 0 ? 0.0 : values.array().abs().maxCoeff();
+    }
+
+    scalar_t maxInequalityViolation(const vector_t& values) const {
+        return values.size() == 0 ? 0.0 : (-values).array().maxCoeff();
+    }
+
     // standard subproblem format for the QP solver.
     struct SubproblemData {
         vector_t g;
@@ -505,9 +513,11 @@ private:
 
     bool checkStoppingCriteria() {
         // check the stopping criteria
-        if (trustRegionRadius_ < trustRegionTol_ || pTrial_.norm()/xIterate_.norm() < trailTol_) {
+        const scalar_t iterateNorm = xIterate_.norm();
+        const scalar_t relativeStep = pTrial_.norm() / (iterateNorm > 1.0 ? iterateNorm : 1.0);
+        if (trustRegionRadius_ < trustRegionTol_ || relativeStep < trailTol_) {
             std::cout << "current merit function converge, examing the constraints violation.\n" << std::endl;
-            if (eqValues_.array().abs().maxCoeff() < constraintTol_ && (-ineqValues_).array().maxCoeff() < constraintTol_) {
+            if (maxEqualityViolation(eqValues_) < constraintTol_ && maxInequalityViolation(ineqValues_) < constraintTol_) {
                 std::cout << "Optimization converged.\n" << std::endl;
                 return true;
             }

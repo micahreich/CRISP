@@ -9,9 +9,14 @@ target_include_directories(CRISP PUBLIC
   ${EIGEN3_INCLUDE_DIR}     
   ${Boost_INCLUDE_DIRS}
   ${CPPAD_INCLUDE_DIRS}
+  ${CPPADCG_INCLUDE_DIRS}
   ${YAML_CPP_INCLUDE_DIR}      
 )
 
+target_link_directories(CRISP PUBLIC
+  ${CPPAD_LIBRARY_DIRS}
+  ${CPPADCG_LIBRARY_DIRS}
+)
 
 target_link_libraries(CRISP
   ${Boost_LIBRARIES}
@@ -55,5 +60,3 @@ pybind11_add_module(pyCRISP python/pybindSolver.cpp)
 target_link_libraries(pyCRISP PRIVATE CRISP)
 # Ensure position-independent code for the shared module
 set_target_properties(CRISP pyCRISP PROPERTIES POSITION_INDEPENDENT_CODE ON)
-
-

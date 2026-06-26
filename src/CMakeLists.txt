@@ -7,19 +7,16 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 # MATLAB root directory
 # set(MATLAB_ROOT "/usr/local/MATLAB/R2024a") # Replace with your MATLAB installation path
 # Add PKG_CONFIG_PATH
-set(ENV{PKG_CONFIG_PATH} "/usr/local/share/pkgconfig:$ENV{PKG_CONFIG_PATH}")
+set(ENV{PKG_CONFIG_PATH} "${CMAKE_SOURCE_DIR}/third_party/install/share/pkgconfig:/usr/local/share/pkgconfig:$ENV{PKG_CONFIG_PATH}")
 
 # Find packages
 find_package(PkgConfig REQUIRED)
 # CPPAD output the .pc file, find it with pkgconfig
 # CPPADCG is header file only, if you install it default, you don't need to find it explicitly
 pkg_check_modules(CPPAD REQUIRED cppad)
+pkg_check_modules(CPPADCG REQUIRED cppadcg)
 find_package(Eigen3 REQUIRED)
-find_package(Boost REQUIRED COMPONENTS
-system
-filesystem
-log_setup
-log)
+find_package(Boost REQUIRED COMPONENTS filesystem)
 find_package(yaml-cpp REQUIRED) # Yaml for reading the hyper-parameters for the solver
 find_package(piqp REQUIRED) # piqp is header only
 

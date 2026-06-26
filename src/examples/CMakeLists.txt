@@ -34,3 +34,9 @@ add_executable(pushT_example pushT/SolvePushT.cpp)
 target_link_libraries(pushT_example
   CRISP
 )
+
+add_executable(marble_data_example marble/SolveMarbleData.cpp)
+
+target_link_libraries(marble_data_example
+  CRISP
+)
