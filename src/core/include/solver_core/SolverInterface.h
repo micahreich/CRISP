@@ -280,7 +280,7 @@ public:
             }
         }
         auto endsolve = std::chrono::high_resolution_clock::now();
-        time_total = std::chrono::duration_cast<std::chrono::milliseconds>(endsolve - startsolve).count();
+        time_total = std::chrono::duration<scalar_t>(endsolve - startsolve).count();
         // xHistory_.push_back(xIterate_); // Maintain full state for x
         // meritHistory_.push_back(phi_);
         costHistory_.push_back(obj_);
@@ -292,8 +292,8 @@ public:
 
     vector_t getSolution() {
         std::cout << "Optimization problem:" << problemName_ << " solved in " << currentIterate_ << " iterations." << std::endl;
-        std::cout << "Solver time: " << time_total << "ms" << std::endl;
-        std::cout << "QP solver time: " << time_qp/1000 << "ms" << std::endl;
+        std::cout << "Solver time: " << getSolveTimeSeconds() << "s" << std::endl;
+        std::cout << "QP solver time: " << getQpSolveTimeSeconds() << "s" << std::endl;
         std::cout << "max constraint violation: equality: " << maxEqualityViolation(eqValues_) << " inequality: " << maxInequalityViolation(ineqValues_) << std::endl;
         std::cout << "obj from " << costHistory_[0] << " to " << costHistory_.back() << std::endl;
         return xIterate_;
@@ -301,6 +301,18 @@ public:
 
     vector_t getSolutionSilent() {
         return xIterate_;
+    }
+
+    scalar_t getSolveTimeSeconds() const {
+        return time_total;
+    }
+
+    scalar_t getQpSolveTimeSeconds() const {
+        return time_qp;
+    }
+
+    size_t getIterationCount() const {
+        return currentIterate_;
     }
 
     void saveResults(const std::string& folderPrefix) {
@@ -489,7 +501,7 @@ private:
           }
         piqp::Status status = piqpSolver_.solve();     
         auto endsol = std::chrono::high_resolution_clock::now();
-        time_qp += std::chrono::duration_cast<std::chrono::microseconds>(endsol - startsol).count();
+        time_qp += std::chrono::duration<scalar_t>(endsol - startsol).count();
         return piqpSolver_.result().x;
 
     }

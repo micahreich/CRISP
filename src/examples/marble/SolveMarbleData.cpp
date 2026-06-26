@@ -112,6 +112,9 @@ int main(int argc, char** argv) {
         solver.initialize(x0);
         solver.solve();
         const vector_t x = solver.getSolution();
+        std::cout << "Timing summary: solve " << solver.getSolveTimeSeconds()
+                  << "s, QP " << solver.getQpSolveTimeSeconds()
+                  << "s, iterations " << solver.getIterationCount() << '\n';
 
         std::cout << "\nResiduals in the original Marble form:\n";
         printMarbleResiduals(data, x);
