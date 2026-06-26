@@ -3,12 +3,12 @@
 
 #include "problem_core/OptimizationProblem.h"
 
-#include <cstdint>
+#include <unsupported/Eigen/SparseExtra>
+
 #include <fstream>
 #include <memory>
 #include <stdexcept>
 #include <string>
-#include <vector>
 
 namespace CRISP {
 
@@ -32,73 +32,51 @@ struct MarbleProblemData {
 
 namespace marble_adapter_detail {
 
-inline void readExact(std::istream& in, char* data, std::streamsize bytes, const std::string& what) {
-    if (!in.read(data, bytes)) {
-        throw std::runtime_error("Truncated Marble problem while reading " + what);
+inline std::string joinPath(const std::string& dir, const std::string& file) {
+    if (dir.empty() || dir[dir.size() - 1] == '/') {
+        return dir + file;
     }
+    return dir + "/" + file;
 }
 
-template <typename T>
-inline T readScalar(std::istream& in, const std::string& what) {
-    T value;
-    readExact(in, reinterpret_cast<char*>(&value), static_cast<std::streamsize>(sizeof(T)), what);
-    return value;
-}
-
-inline sparse_matrix_t readSparse(std::istream& in, const std::string& name) {
-    const auto rows64 = readScalar<std::int64_t>(in, name + ".rows");
-    const auto cols64 = readScalar<std::int64_t>(in, name + ".cols");
-    const auto nnz64 = readScalar<std::int64_t>(in, name + ".nnz");
-    if (rows64 < 0 || cols64 < 0 || nnz64 < 0) {
-        throw std::runtime_error("Negative dimension in sparse block " + name);
+inline sparse_matrix_t loadMarketSparse(const std::string& path, const std::string& name) {
+    sparse_matrix_t matrix;
+    if (!Eigen::loadMarket(matrix, path)) {
+        throw std::runtime_error("Unable to load Matrix Market sparse block " + name + " from " + path);
     }
-
-    std::vector<std::int64_t> colptr(static_cast<size_t>(cols64) + 1);
-    std::vector<std::int64_t> rowval(static_cast<size_t>(nnz64));
-    std::vector<scalar_t> nzval(static_cast<size_t>(nnz64));
-
-    readExact(in, reinterpret_cast<char*>(colptr.data()),
-              static_cast<std::streamsize>(colptr.size() * sizeof(std::int64_t)), name + ".colptr");
-    readExact(in, reinterpret_cast<char*>(rowval.data()),
-              static_cast<std::streamsize>(rowval.size() * sizeof(std::int64_t)), name + ".rowval");
-    readExact(in, reinterpret_cast<char*>(nzval.data()),
-              static_cast<std::streamsize>(nzval.size() * sizeof(scalar_t)), name + ".nzval");
-
-    const int rows = static_cast<int>(rows64);
-    const int cols = static_cast<int>(cols64);
-    std::vector<Eigen::Triplet<scalar_t>> triplets;
-    triplets.reserve(static_cast<size_t>(nnz64));
-    for (int col = 0; col < cols; ++col) {
-        const auto begin = colptr[static_cast<size_t>(col)];
-        const auto end = colptr[static_cast<size_t>(col + 1)];
-        if (begin < 0 || end < begin || end > nnz64) {
-            throw std::runtime_error("Invalid CSC column pointer in sparse block " + name);
-        }
-        for (std::int64_t p = begin; p < end; ++p) {
-            const auto row = rowval[static_cast<size_t>(p)];
-            if (row < 0 || row >= rows64) {
-                throw std::runtime_error("Invalid CSC row index in sparse block " + name);
-            }
-            triplets.emplace_back(static_cast<int>(row), col, nzval[static_cast<size_t>(p)]);
-        }
-    }
-
-    sparse_matrix_t matrix(rows, cols);
-    matrix.setFromTriplets(triplets.begin(), triplets.end());
     matrix.makeCompressed();
     return matrix;
 }
 
-inline vector_t readVector(std::istream& in, const std::string& name) {
-    const auto len64 = readScalar<std::int64_t>(in, name + ".length");
-    if (len64 < 0) {
-        throw std::runtime_error("Negative length in vector block " + name);
+inline vector_t loadMarketVector(const std::string& path, const std::string& name) {
+    vector_t vector;
+    if (Eigen::loadMarketVector(vector, path)) {
+        return vector;
     }
 
-    vector_t vector(static_cast<int>(len64));
-    readExact(in, reinterpret_cast<char*>(vector.data()),
-              static_cast<std::streamsize>(static_cast<size_t>(len64) * sizeof(scalar_t)), name);
-    return vector;
+    sparse_matrix_t matrix;
+    if (!Eigen::loadMarket(matrix, path)) {
+        throw std::runtime_error("Unable to load Matrix Market vector block " + name + " from " + path);
+    }
+    if (matrix.cols() == 1) {
+        return vector_t(matrix);
+    }
+    if (matrix.rows() == 1) {
+        return vector_t(matrix.transpose());
+    }
+    throw std::runtime_error("Matrix Market vector block " + name + " must be a row or column vector");
+}
+
+inline scalar_t loadScalarText(const std::string& path, const std::string& name) {
+    std::ifstream in(path);
+    if (!in.is_open()) {
+        throw std::runtime_error("Unable to open scalar block " + name + " from " + path);
+    }
+    scalar_t value;
+    if (!(in >> value)) {
+        throw std::runtime_error("Unable to parse scalar block " + name + " from " + path);
+    }
+    return value;
 }
 
 inline ad_scalar_t sparseDotRow(const sparse_matrix_t& A, int row, const ad_vector_t& x) {
@@ -140,36 +118,19 @@ inline void validateMarbleProblemData(const MarbleProblemData& data) {
     }
 }
 
-inline MarbleProblemData loadMarbleProblemData(const std::string& path) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in.is_open()) {
-        throw std::runtime_error("Unable to open Marble problem file: " + path);
-    }
-
-    const std::string expectedMagic = "MARBLEPB";
-    std::vector<char> magic(expectedMagic.size());
-    marble_adapter_detail::readExact(in, magic.data(), static_cast<std::streamsize>(magic.size()), "magic");
-    if (std::string(magic.begin(), magic.end()) != expectedMagic) {
-        throw std::runtime_error("Not a Marble problem file: " + path);
-    }
-
-    const auto version = marble_adapter_detail::readScalar<std::int64_t>(in, "version");
-    if (version != 1) {
-        throw std::runtime_error("Unsupported Marble problem version " + std::to_string(version));
-    }
-
+inline MarbleProblemData loadMarbleProblemData(const std::string& dir) {
     MarbleProblemData data;
-    data.c0 = marble_adapter_detail::readScalar<scalar_t>(in, "cost constant");
-    data.Q = marble_adapter_detail::readSparse(in, "Q");
-    data.q = marble_adapter_detail::readVector(in, "q");
-    data.J_eq = marble_adapter_detail::readSparse(in, "J_eq");
-    data.b_eq = marble_adapter_detail::readVector(in, "b_eq");
-    data.J_ineq = marble_adapter_detail::readSparse(in, "J_ineq");
-    data.b_ineq = marble_adapter_detail::readVector(in, "b_ineq");
-    data.L = marble_adapter_detail::readSparse(in, "L");
-    data.l = marble_adapter_detail::readVector(in, "l");
-    data.R = marble_adapter_detail::readSparse(in, "R");
-    data.r = marble_adapter_detail::readVector(in, "r");
+    data.c0 = marble_adapter_detail::loadScalarText(marble_adapter_detail::joinPath(dir, "c0.txt"), "c0");
+    data.Q = marble_adapter_detail::loadMarketSparse(marble_adapter_detail::joinPath(dir, "Q_matrix.mtx"), "Q");
+    data.q = marble_adapter_detail::loadMarketVector(marble_adapter_detail::joinPath(dir, "q_vector.mtx"), "q");
+    data.J_eq = marble_adapter_detail::loadMarketSparse(marble_adapter_detail::joinPath(dir, "J_eq_matrix.mtx"), "J_eq");
+    data.b_eq = marble_adapter_detail::loadMarketVector(marble_adapter_detail::joinPath(dir, "b_eq_vector.mtx"), "b_eq");
+    data.J_ineq = marble_adapter_detail::loadMarketSparse(marble_adapter_detail::joinPath(dir, "J_ineq_matrix.mtx"), "J_ineq");
+    data.b_ineq = marble_adapter_detail::loadMarketVector(marble_adapter_detail::joinPath(dir, "b_ineq_vector.mtx"), "b_ineq");
+    data.L = marble_adapter_detail::loadMarketSparse(marble_adapter_detail::joinPath(dir, "L_matrix.mtx"), "L");
+    data.l = marble_adapter_detail::loadMarketVector(marble_adapter_detail::joinPath(dir, "l_vector.mtx"), "l");
+    data.R = marble_adapter_detail::loadMarketSparse(marble_adapter_detail::joinPath(dir, "R_matrix.mtx"), "R");
+    data.r = marble_adapter_detail::loadMarketVector(marble_adapter_detail::joinPath(dir, "r_vector.mtx"), "r");
     validateMarbleProblemData(data);
     return data;
 }
@@ -243,13 +204,13 @@ inline std::unique_ptr<OptimizationProblem> makeCrispProblemFromMarbleData(
 }
 
 inline std::unique_ptr<OptimizationProblem> makeCrispProblemFromMarbleFile(
-    const std::string& path,
+    const std::string& dir,
     const std::string& problemName = "MarbleDataProblem",
     const std::string& folderName = "model",
     bool regenerateLibrary = true) {
 
     return makeCrispProblemFromMarbleData(
-        loadMarbleProblemData(path), problemName, folderName, regenerateLibrary);
+        loadMarbleProblemData(dir), problemName, folderName, regenerateLibrary);
 }
 
 } // namespace CRISP

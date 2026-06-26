@@ -16,8 +16,7 @@ PIQP_CONFIG := $(THIRD_PARTY_PREFIX)/lib/cmake/piqp/piqpConfig.cmake
 CPPADCG_DIR := $(THIRD_PARTY_DIR)/CppADCodeGen
 CPPADCG_PC := $(THIRD_PARTY_PREFIX)/share/pkgconfig/cppadcg.pc
 
-.PHONY: all help brew-deps third_party configure build clean distclean \
-	marble_data_example run-marble-smoke
+.PHONY: all help brew-deps third_party configure build clean distclean crisp_julia
 
 all: third_party configure build
 
@@ -28,9 +27,7 @@ help:
 	@echo "  make                  Build local third-party deps, configure, and build everything"
 	@echo "  make configure         Configure CMake into $(BUILD_DIR)"
 	@echo "  make build             Build all CMake targets"
-	@echo "  make marble_data_example"
-	@echo "                         Build only the Marble-data CRISP example"
-	@echo "  make run-marble-smoke  Generate and solve the tiny Marble example"
+	@echo "  make crisp_julia       Build the Julia CxxWrap binding"
 	@echo "  make clean             Clean compiled CMake outputs"
 	@echo "  make distclean         Remove build dir and local third-party deps"
 	@echo "  make brew-deps         Install Homebrew deps used on macOS"
@@ -75,14 +72,8 @@ configure: third_party
 build: configure
 	$(CMAKE) --build $(BUILD_DIR) -j$(JOBS)
 
-marble_data_example: configure
-	$(CMAKE) --build $(BUILD_DIR) --target marble_data_example -j$(JOBS)
-
-run-marble-smoke: marble_data_example
-	julia $(SRC_DIR)/examples/marble/write_simple_problem.jl
-	$(BUILD_DIR)/examples/marble_data_example $(SRC_DIR)/examples/marble/simple_qpcc.marble
-	rm -f $(SRC_DIR)/examples/marble/simple_qpcc.marble
-	rm -rf $(CURDIR)/model
+crisp_julia: configure
+	$(CMAKE) --build $(BUILD_DIR) --target crisp_julia -j$(JOBS)
 
 clean:
 	@if [ -d "$(BUILD_DIR)" ]; then $(CMAKE) --build $(BUILD_DIR) --target clean; fi
