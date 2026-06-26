@@ -12,7 +12,7 @@
 namespace CRISP {
 class SolverInterface {
 public:
-    SolverInterface(OptimizationProblem& problem, SolverParameters& parameters) : problem_(problem), solverParameters_(parameters), initialized_(false) {
+    SolverInterface(OptimizationProblem& problem, SolverParameters& parameters) : problem_(problem), solverParameters_(parameters), initialized_(false), converged_(false) {
         
         }
     void initialize(const vector_t& initial_guess) {
@@ -34,6 +34,7 @@ public:
         xInitial_ = initial_guess;
         xIterate_ = initial_guess;
         currentIterate_ = 0;
+        converged_ = false;
         numEqualityConstraints_ = problem_.getNumEqualityConstraints();
         numInequalityConstraints_ = problem_.getNumInequalityConstraints();
         hasEqualityConstraints_ = numEqualityConstraints_ > 0;
@@ -127,6 +128,7 @@ public:
         xInitial_ = initial_guess;
         xIterate_ = initial_guess;
         currentIterate_ = 0;
+        converged_ = false;
         // reset the parameters
         maxIterations_ = solverParameters_.getParameters("maxIterations")(0);
         trailTol_ = solverParameters_.getParameters("trailTol")(0);
@@ -183,6 +185,7 @@ public:
     // print the result
 
     void solve() {
+        converged_ = false;
         // initialization
         obj_ = problem_.evaluateObjective(xIterate_);
         objJac_ = problem_.evaluateObjectiveGradient(xIterate_).toDense().row(0).transpose();
@@ -313,6 +316,10 @@ public:
 
     size_t getIterationCount() const {
         return currentIterate_;
+    }
+
+    bool hasConverged() const {
+        return converged_;
     }
 
     void saveResults(const std::string& folderPrefix) {
@@ -531,6 +538,7 @@ private:
             std::cout << "current merit function converge, examing the constraints violation.\n" << std::endl;
             if (maxEqualityViolation(eqValues_) < constraintTol_ && maxInequalityViolation(ineqValues_) < constraintTol_) {
                 std::cout << "Optimization converged.\n" << std::endl;
+                converged_ = true;
                 return true;
             }
             else {
@@ -546,6 +554,7 @@ private:
 
                     if (max_mu == muMax_) {
                         std::cout << "penalty maxed out, check the solution.\n" << std::endl;
+                        converged_ = false;
                         return true;
                     }
                     // mu_ = std::min(10 * mu_, muMax_);
@@ -567,6 +576,7 @@ private:
                 else {
                     if (mu_ == muMax_) {
                         std::cout << "penalty maxed out, check the solution.\n" << std::endl;
+                        converged_ = false;
                         return true;
                     }
                     // std::cout << "increase penalty" << std::endl;
@@ -701,6 +711,7 @@ private:
     size_t increaseCount_; 
     bool hasEqualityConstraints_;
     bool hasInequalityConstraints_;
+    bool converged_;
     triplet_vector_t tripletListFixed_Aeq_;
     triplet_vector_t tripletListFixed_Aineq_;
     // // history

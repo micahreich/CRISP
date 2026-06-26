@@ -1,10 +1,9 @@
 #include <jlcxx/jlcxx.hpp>
 
 #include <algorithm>
-#include <exception>
+#include <memory>
 #include <stdexcept>
 #include <string>
-#include <tuple>
 #include <vector>
 
 #include "problem_core/MarbleProblemAdapter.h"
@@ -12,17 +11,107 @@
 
 using namespace CRISP;
 
-template <typename F>
-auto julia_call(F&& f) -> decltype(f()) {
-    try {
-        return f();
-    } catch (const std::exception& e) {
-        jl_error(e.what());
-    } catch (...) {
-        jl_error("Unknown C++ exception in CRISP");
+class JuliaOptimizationProblem {
+public:
+    explicit JuliaOptimizationProblem(std::unique_ptr<OptimizationProblem> problem)
+        : problem_(std::move(problem)) {}
+
+    OptimizationProblem& get() {
+        return *problem_;
     }
-    throw std::runtime_error("unreachable after jl_error");
-}
+
+    const OptimizationProblem& get() const {
+        return *problem_;
+    }
+
+    std::shared_ptr<OptimizationProblem> shared() const {
+        return problem_;
+    }
+
+private:
+    std::shared_ptr<OptimizationProblem> problem_;
+};
+
+class JuliaSolverParameters {
+public:
+    SolverParameters& get() {
+        return parameters_;
+    }
+
+    const SolverParameters& get() const {
+        return parameters_;
+    }
+
+    void setHyperParameter(const std::string& name, double value) {
+        parameters_.setParameters(name, vector_t::Constant(1, value));
+    }
+
+    double getHyperParameter(const std::string& name) const {
+        return parameters_.getParameters(name)(0);
+    }
+
+private:
+    SolverParameters parameters_;
+};
+
+class JuliaSolverInterface {
+public:
+    explicit JuliaSolverInterface(JuliaOptimizationProblem& problem)
+        : problem_(problem.shared()),
+          parameters_(),
+          solver_(std::make_unique<SolverInterface>(*problem_, parameters_)) {}
+
+    JuliaSolverInterface(JuliaOptimizationProblem& problem, JuliaSolverParameters& parameters)
+        : problem_(problem.shared()),
+          parameters_(parameters.get()),
+          solver_(std::make_unique<SolverInterface>(*problem_, parameters_)) {}
+
+    void setHyperParameter(const std::string& name, double value) {
+        parameters_.setParameters(name, vector_t::Constant(1, value));
+        solver_->setHyperParameters(name, vector_t::Constant(1, value));
+    }
+
+    double getHyperParameter(const std::string& name) const {
+        return parameters_.getParameters(name)(0);
+    }
+
+    void initialize(const vector_t& initial) {
+        if (initial.size() != static_cast<long>(problem_->getVariableDim())) {
+            throw std::runtime_error("Initial guess length does not match problem dimension");
+        }
+        solver_->initialize(initial);
+    }
+
+    bool solve() {
+        solver_->solve();
+        return solver_->hasConverged();
+    }
+
+    vector_t getSolution() {
+        return solver_->getSolutionSilent();
+    }
+
+    double getSolveTimeSeconds() const {
+        return solver_->getSolveTimeSeconds();
+    }
+
+    double getQpSolveTimeSeconds() const {
+        return solver_->getQpSolveTimeSeconds();
+    }
+
+    int64_t getIterationCount() const {
+        return static_cast<int64_t>(solver_->getIterationCount());
+    }
+
+    bool hasConverged() const {
+        return solver_->hasConverged();
+    }
+
+private:
+    std::shared_ptr<OptimizationProblem> problem_;
+    SolverParameters parameters_;
+    std::unique_ptr<SolverInterface> solver_;
+};
 
 template <typename T>
 Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic> to_eigen(jlcxx::ArrayRef<T, 2>& arr) {
@@ -76,9 +165,9 @@ static MarbleProblemData make_data(jlcxx::ArrayRef<double, 2> Q,
                                    jlcxx::ArrayRef<double, 1> q,
                                    double c0,
                                    jlcxx::ArrayRef<double, 2> J_eq,
-                                   jlcxx::ArrayRef<double, 1> b_eq,
+                                   jlcxx::ArrayRef<double, 1> c_eq,
                                    jlcxx::ArrayRef<double, 2> J_ineq,
-                                   jlcxx::ArrayRef<double, 1> b_ineq,
+                                   jlcxx::ArrayRef<double, 1> c_ineq,
                                    jlcxx::ArrayRef<double, 2> L,
                                    jlcxx::ArrayRef<double, 1> l,
                                    jlcxx::ArrayRef<double, 2> R,
@@ -88,9 +177,9 @@ static MarbleProblemData make_data(jlcxx::ArrayRef<double, 2> Q,
     data.q = to_eigen(q);
     data.c0 = c0;
     data.J_eq = dense_to_sparse(to_eigen(J_eq));
-    data.b_eq = to_eigen(b_eq);
+    data.c_eq = to_eigen(c_eq);
     data.J_ineq = dense_to_sparse(to_eigen(J_ineq));
-    data.b_ineq = to_eigen(b_ineq);
+    data.c_ineq = to_eigen(c_ineq);
     data.L = dense_to_sparse(to_eigen(L));
     data.l = to_eigen(l);
     data.R = dense_to_sparse(to_eigen(R));
@@ -100,47 +189,79 @@ static MarbleProblemData make_data(jlcxx::ArrayRef<double, 2> Q,
 }
 
 JLCXX_MODULE define_julia_module(jlcxx::Module& mod) {
-    mod.method("solve_qpcc_dense", [](jlcxx::ArrayRef<double, 2> Q,
-                                      jlcxx::ArrayRef<double, 1> q,
-                                      double c0,
-                                      jlcxx::ArrayRef<double, 2> J_eq,
-                                      jlcxx::ArrayRef<double, 1> b_eq,
-                                      jlcxx::ArrayRef<double, 2> J_ineq,
-                                      jlcxx::ArrayRef<double, 1> b_ineq,
-                                      jlcxx::ArrayRef<double, 2> L,
-                                      jlcxx::ArrayRef<double, 1> l,
-                                      jlcxx::ArrayRef<double, 2> R,
-                                      jlcxx::ArrayRef<double, 1> r,
-                                      jlcxx::ArrayRef<double, 1> x0,
-                                      double trust_region_tol,
-                                      double trail_tol,
-                                      double constraint_tol,
-                                      double weighted_mode,
-                                      double verbose) {
-        return julia_call([&]() {
-            MarbleProblemData data = make_data(Q, q, c0, J_eq, b_eq, J_ineq, b_ineq, L, l, R, r);
-            vector_t initial = to_eigen(x0);
-            if (initial.size() != data.q.size()) {
-                throw std::runtime_error("Initial guess length does not match problem dimension");
-            }
-
-            auto problem = makeCrispProblemFromMarbleData(data, "JuliaMarbleDataProblem", "model", true);
-            SolverParameters params;
-            SolverInterface solver(*problem, params);
-            solver.setHyperParameters("trustRegionTol", vector_t::Constant(1, trust_region_tol));
-            solver.setHyperParameters("trailTol", vector_t::Constant(1, trail_tol));
-            solver.setHyperParameters("constraintTol", vector_t::Constant(1, constraint_tol));
-            solver.setHyperParameters("WeightedMode", vector_t::Constant(1, weighted_mode));
-            solver.setHyperParameters("verbose", vector_t::Constant(1, verbose));
-
-            solver.initialize(initial);
-            solver.solve();
-            vector_t solution = solver.getSolutionSilent();
-            return std::make_tuple(
-                make_julia_owned<double>(std::move(solution)),
-                solver.getSolveTimeSeconds(),
-                solver.getQpSolveTimeSeconds(),
-                static_cast<int64_t>(solver.getIterationCount()));
+    mod.add_type<JuliaOptimizationProblem>("OptimizationProblem")
+        .constructor([](jlcxx::ArrayRef<double, 2> Q,
+                        jlcxx::ArrayRef<double, 1> q,
+                        double c0,
+                        jlcxx::ArrayRef<double, 2> J_eq,
+                        jlcxx::ArrayRef<double, 1> c_eq,
+                        jlcxx::ArrayRef<double, 2> J_ineq,
+                        jlcxx::ArrayRef<double, 1> c_ineq,
+                        jlcxx::ArrayRef<double, 2> L,
+                        jlcxx::ArrayRef<double, 1> l,
+                        jlcxx::ArrayRef<double, 2> R,
+                        jlcxx::ArrayRef<double, 1> r,
+                        const std::string& problem_name,
+                        const std::string& folder_name,
+                        bool regenerate_library) {
+            MarbleProblemData data = make_data(Q, q, c0, J_eq, c_eq, J_ineq, c_ineq, L, l, R, r);
+            return new JuliaOptimizationProblem(
+                makeCrispProblemFromMarbleData(data, problem_name, folder_name, regenerate_library));
+        })
+        .method("get_variable_dim", [](const JuliaOptimizationProblem& p) {
+            return static_cast<int64_t>(p.get().getVariableDim());
+        })
+        .method("get_num_objectives", [](const JuliaOptimizationProblem& p) {
+            return static_cast<int64_t>(p.get().getNumObjectives());
+        })
+        .method("get_num_equality_constraints", [](const JuliaOptimizationProblem& p) {
+            return static_cast<int64_t>(p.get().getNumEqualityConstraints());
+        })
+        .method("get_num_inequality_constraints", [](const JuliaOptimizationProblem& p) {
+            return static_cast<int64_t>(p.get().getNumInequalityConstraints());
+        })
+        .method("get_problem_name", [](const JuliaOptimizationProblem& p) {
+            return p.get().getProblemName();
         });
-    });
+
+    mod.add_type<JuliaSolverParameters>("SolverParameters")
+        .constructor()
+        .method("_set_hyper_parameter!", [](JuliaSolverParameters& p, const std::string& name, double value) {
+            p.setHyperParameter(name, value);
+        })
+        .method("_get_hyper_parameter", [](const JuliaSolverParameters& p, const std::string& name) {
+            return p.getHyperParameter(name);
+        });
+
+    mod.add_type<JuliaSolverInterface>("SolverInterface")
+        .constructor<JuliaOptimizationProblem&>()
+        .constructor<JuliaOptimizationProblem&, JuliaSolverParameters&>()
+        .method("_set_hyper_parameter!", [](JuliaSolverInterface& s, const std::string& name, double value) {
+            s.setHyperParameter(name, value);
+        })
+        .method("_get_hyper_parameter", [](const JuliaSolverInterface& s, const std::string& name) {
+            return s.getHyperParameter(name);
+        })
+        .method("initialize!", [](JuliaSolverInterface& s, jlcxx::ArrayRef<double, 1> x0) {
+            s.initialize(to_eigen(x0));
+        })
+        .method("solve!", [](JuliaSolverInterface& s) {
+            return s.solve();
+        })
+        .method("get_solution_silent", [](JuliaSolverInterface& s) {
+            return make_julia_owned<double>(s.getSolution());
+        })
+        .method("get_solve_time_seconds", [](const JuliaSolverInterface& s) {
+            return s.getSolveTimeSeconds();
+        })
+        .method("get_qp_solve_time_seconds", [](const JuliaSolverInterface& s) {
+            return s.getQpSolveTimeSeconds();
+        })
+        .method("get_iteration_count", [](const JuliaSolverInterface& s) {
+            return s.getIterationCount();
+        })
+        .method("has_converged", [](const JuliaSolverInterface& s) {
+            return s.hasConverged();
+        });
+
 }

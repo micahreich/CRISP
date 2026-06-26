@@ -1,7 +1,6 @@
 module CRISP
 
 using CxxWrap
-using LinearAlgebra
 using Preferences
 
 const _libcrisp_julia = @load_preference("libcrisp_julia_path",
@@ -12,6 +11,34 @@ const _libcrisp_julia = @load_preference("libcrisp_julia_path",
 function __init__()
     @initcxx
 end
+
+const OPTION_NAME_MAP = Dict{Symbol, String}(
+    :max_iterations => "maxIterations",
+    :trust_region_init_radius => "trustRegionInitRadius",
+    :trust_region_max_radius => "trustRegionMaxRadius",
+    :mu => "mu",
+    :mu_max => "muMax",
+    :eta_low => "etaLow",
+    :eta_high => "etaHigh",
+    :trail_tol => "trailTol",
+    :trust_region_tol => "trustRegionTol",
+    :constraint_tol => "constraintTol",
+    :verbose => "verbose",
+    :weighted_mode => "WeightedMode",
+    :weighted_tol_factor => "WeightedTolFactor",
+    :second_order_correction => "secondOrderCorrection",
+)
+
+_option_name(name::Symbol) = get(OPTION_NAME_MAP, name) do
+    throw(ArgumentError("unknown CRISP option: $name"))
+end
+_option_name(name::AbstractString) = String(name)
+
+set_hyper_parameter!(target::Union{SolverInterface, SolverParameters}, name, value::Real) =
+    CRISP._set_hyper_parameter!(target, _option_name(name), Float64(value))
+
+get_hyper_parameter(target::Union{SolverInterface, SolverParameters}, name) =
+    CRISP._get_hyper_parameter(target, _option_name(name))
 
 _mat(M, rows, cols, name) = begin
     A = Matrix{Float64}(M)
@@ -25,42 +52,24 @@ _vec(v, len, name) = begin
     x
 end
 
-"""
-    solve_qpcc(Q, q, c0=0.0; J_eq, b_eq, J_ineq, b_ineq, L, l, R, r, x0, ...)
-
-Solve the matrix-form QPCC with CRISP:
-
-    minimize    1/2 x'Qx + q'x + c0
-    subject to  J_eq x + b_eq == 0
-                J_ineq x + b_ineq >= 0
-                0 <= Lx + l complements Rx + r >= 0
-
-Returns `(x, solve_time_seconds, qp_time_seconds, iterations)`.
-"""
-function solve_qpcc(Q, q, c0::Real=0.0;
-                    J_eq=nothing, b_eq=nothing,
-                    J_ineq=nothing, b_ineq=nothing,
+function _qpcc_data(Q, q, c0::Real;
+                    J_eq=nothing, c_eq=nothing,
+                    J_ineq=nothing, c_ineq=nothing,
                     L=nothing, l=nothing,
-                    R=nothing, r=nothing,
-                    x0=nothing,
-                    trust_region_tol=1e-5,
-                    trail_tol=1e-5,
-                    constraint_tol=1e-5,
-                    weighted_mode=1.0,
-                    verbose=0.0)
+                    R=nothing, r=nothing)
     qv = Vector{Float64}(q)
     n = length(qv)
     Qm = _mat(Q, n, n, "Q")
 
     Je = isnothing(J_eq) ? zeros(0, n) : Matrix{Float64}(J_eq)
-    be = isnothing(b_eq) ? zeros(size(Je, 1)) : Vector{Float64}(b_eq)
+    ce = isnothing(c_eq) ? zeros(size(Je, 1)) : Vector{Float64}(c_eq)
     size(Je, 2) == n || throw(ArgumentError("J_eq must have $n columns"))
-    length(be) == size(Je, 1) || throw(ArgumentError("b_eq length must match rows of J_eq"))
+    length(ce) == size(Je, 1) || throw(ArgumentError("c_eq length must match rows of J_eq"))
 
     Ji = isnothing(J_ineq) ? zeros(0, n) : Matrix{Float64}(J_ineq)
-    bi = isnothing(b_ineq) ? zeros(size(Ji, 1)) : Vector{Float64}(b_ineq)
+    ci = isnothing(c_ineq) ? zeros(size(Ji, 1)) : Vector{Float64}(c_ineq)
     size(Ji, 2) == n || throw(ArgumentError("J_ineq must have $n columns"))
-    length(bi) == size(Ji, 1) || throw(ArgumentError("b_ineq length must match rows of J_ineq"))
+    length(ci) == size(Ji, 1) || throw(ArgumentError("c_ineq length must match rows of J_ineq"))
 
     Lm = isnothing(L) ? zeros(0, n) : Matrix{Float64}(L)
     lv = isnothing(l) ? zeros(size(Lm, 1)) : Vector{Float64}(l)
@@ -72,21 +81,112 @@ function solve_qpcc(Q, q, c0::Real=0.0;
     length(lv) == size(Lm, 1) || throw(ArgumentError("l length must match rows of L"))
     length(rv) == size(Rm, 1) || throw(ArgumentError("r length must match rows of R"))
 
-    xinit = isnothing(x0) ? zeros(n) : _vec(x0, n, "x0")
-
-    x, solve_time, qp_time, iterations = CRISP.solve_qpcc_dense(
-        Qm, qv, Float64(c0), Je, be, Ji, bi, Lm, lv, Rm, rv, xinit,
-        Float64(trust_region_tol), Float64(trail_tol), Float64(constraint_tol),
-        Float64(weighted_mode), Float64(verbose))
-
     return (
-        x = Vector{Float64}(x),
-        solve_time_seconds = solve_time,
-        qp_time_seconds = qp_time,
-        iterations = iterations,
+        Q = Qm, q = qv, c0 = Float64(c0),
+        J_eq = Je, c_eq = ce,
+        J_ineq = Ji, c_ineq = ci,
+        L = Lm, l = lv,
+        R = Rm, r = rv,
     )
 end
 
-export solve_qpcc
+function make_crisp_problem_from_marble_data(data::NamedTuple,
+                                             problem_name::AbstractString="CRISPJuliaQPCC",
+                                             folder_name::AbstractString="model",
+                                             regenerate_library::Bool=true)
+    data = _qpcc_data(data.Q, data.q, data.c0;
+        J_eq = data.J_eq, c_eq = data.c_eq,
+        J_ineq = data.J_ineq, c_ineq = data.c_ineq,
+        L = data.L, l = data.l,
+        R = data.R, r = data.r)
+    return CRISP.OptimizationProblem(
+        data.Q, data.q, data.c0,
+        data.J_eq, data.c_eq,
+        data.J_ineq, data.c_ineq,
+        data.L, data.l,
+        data.R, data.r,
+        String(problem_name), String(folder_name), regenerate_library)
+end
+
+function make_crisp_problem_from_marble_data(Q, q, c0::Real=0.0;
+                                             J_eq=nothing, c_eq=nothing,
+                                             J_ineq=nothing, c_ineq=nothing,
+                                             L=nothing, l=nothing,
+                                             R=nothing, r=nothing,
+                                             problem_name::AbstractString="CRISPJuliaQPCC",
+                                             folder_name::AbstractString="model",
+                                             regenerate_library::Bool=true)
+    data = _qpcc_data(Q, q, c0;
+        J_eq = J_eq, c_eq = c_eq,
+        J_ineq = J_ineq, c_ineq = c_ineq,
+        L = L, l = l,
+        R = R, r = r)
+    return make_crisp_problem_from_marble_data(data, problem_name, folder_name, regenerate_library)
+end
+
+"""
+    solve_qpcc_with_crisp(Q, q, c0=0.0; J_eq, c_eq, J_ineq, c_ineq, L, l, R, r, x0, ...)
+
+Solve a matrix-form QPCC with CRISP:
+
+    minimize    1/2 x'Qx + q'x + c0
+    subject to  J_eq x + c_eq == 0
+                J_ineq x + c_ineq >= 0
+                0 <= Lx + l complements Rx + r >= 0
+
+Extra keyword arguments are treated as CRISP solver options.
+"""
+function solve_qpcc_with_crisp(Q, q, c0::Real=0.0;
+                               J_eq=nothing, c_eq=nothing,
+                               J_ineq=nothing, c_ineq=nothing,
+                               L=nothing, l=nothing,
+                               R=nothing, r=nothing,
+                               x0=nothing,
+                               problem_name::AbstractString="CRISPJuliaQPCC",
+                               folder_name::AbstractString="model",
+                               regenerate_library::Bool=true,
+                               kwargs...)
+    data = _qpcc_data(Q, q, c0;
+        J_eq = J_eq, c_eq = c_eq,
+        J_ineq = J_ineq, c_ineq = c_ineq,
+        L = L, l = l,
+        R = R, r = r)
+    return solve_qpcc_with_crisp(data;
+        x0 = x0,
+        problem_name = problem_name,
+        folder_name = folder_name,
+        regenerate_library = regenerate_library,
+        kwargs...)
+end
+
+function solve_qpcc_with_crisp(data::NamedTuple;
+                               x0=nothing,
+                               problem_name::AbstractString="CRISPJuliaQPCC",
+                               folder_name::AbstractString="model",
+                               regenerate_library::Bool=true,
+                               kwargs...)
+    data = _qpcc_data(data.Q, data.q, data.c0;
+        J_eq = data.J_eq, c_eq = data.c_eq,
+        J_ineq = data.J_ineq, c_ineq = data.c_ineq,
+        L = data.L, l = data.l,
+        R = data.R, r = data.r)
+    initial = isnothing(x0) ? zeros(length(data.q)) : _vec(x0, length(data.q), "x0")
+    problem = make_crisp_problem_from_marble_data(data, problem_name, folder_name, regenerate_library)
+    params = CRISP.SolverParameters()
+    for (name, value) in kwargs
+        set_hyper_parameter!(params, name, value)
+    end
+    solver = CRISP.SolverInterface(problem, params)
+    CRISP.initialize!(solver, initial)
+    converged = CRISP.solve!(solver)
+
+    return (
+        converged = converged,
+        x = Vector{Float64}(CRISP.get_solution_silent(solver)),
+        solve_time_seconds = CRISP.get_solve_time_seconds(solver),
+        qp_time_seconds = CRISP.get_qp_solve_time_seconds(solver),
+        iterations = CRISP.get_iteration_count(solver),
+    )
+end
 
 end

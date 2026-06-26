@@ -3,9 +3,6 @@
 
 #include "problem_core/OptimizationProblem.h"
 
-#include <unsupported/Eigen/SparseExtra>
-
-#include <fstream>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -18,10 +15,10 @@ struct MarbleProblemData {
     scalar_t c0 = 0.0;
 
     sparse_matrix_t J_eq;
-    vector_t b_eq;
+    vector_t c_eq;
 
     sparse_matrix_t J_ineq;
-    vector_t b_ineq;
+    vector_t c_ineq;
 
     sparse_matrix_t L;
     vector_t l;
@@ -31,53 +28,6 @@ struct MarbleProblemData {
 };
 
 namespace marble_adapter_detail {
-
-inline std::string joinPath(const std::string& dir, const std::string& file) {
-    if (dir.empty() || dir[dir.size() - 1] == '/') {
-        return dir + file;
-    }
-    return dir + "/" + file;
-}
-
-inline sparse_matrix_t loadMarketSparse(const std::string& path, const std::string& name) {
-    sparse_matrix_t matrix;
-    if (!Eigen::loadMarket(matrix, path)) {
-        throw std::runtime_error("Unable to load Matrix Market sparse block " + name + " from " + path);
-    }
-    matrix.makeCompressed();
-    return matrix;
-}
-
-inline vector_t loadMarketVector(const std::string& path, const std::string& name) {
-    vector_t vector;
-    if (Eigen::loadMarketVector(vector, path)) {
-        return vector;
-    }
-
-    sparse_matrix_t matrix;
-    if (!Eigen::loadMarket(matrix, path)) {
-        throw std::runtime_error("Unable to load Matrix Market vector block " + name + " from " + path);
-    }
-    if (matrix.cols() == 1) {
-        return vector_t(matrix);
-    }
-    if (matrix.rows() == 1) {
-        return vector_t(matrix.transpose());
-    }
-    throw std::runtime_error("Matrix Market vector block " + name + " must be a row or column vector");
-}
-
-inline scalar_t loadScalarText(const std::string& path, const std::string& name) {
-    std::ifstream in(path);
-    if (!in.is_open()) {
-        throw std::runtime_error("Unable to open scalar block " + name + " from " + path);
-    }
-    scalar_t value;
-    if (!(in >> value)) {
-        throw std::runtime_error("Unable to parse scalar block " + name + " from " + path);
-    }
-    return value;
-}
 
 inline ad_scalar_t sparseDotRow(const sparse_matrix_t& A, int row, const ad_vector_t& x) {
     ad_scalar_t value(0.0);
@@ -109,30 +59,13 @@ inline void validateMarbleProblemData(const MarbleProblemData& data) {
         }
     }
 
-    marble_adapter_detail::validateRows(data.J_eq, data.b_eq, "J_eq");
-    marble_adapter_detail::validateRows(data.J_ineq, data.b_ineq, "J_ineq");
+    marble_adapter_detail::validateRows(data.J_eq, data.c_eq, "J_eq");
+    marble_adapter_detail::validateRows(data.J_ineq, data.c_ineq, "J_ineq");
     marble_adapter_detail::validateRows(data.L, data.l, "L");
     marble_adapter_detail::validateRows(data.R, data.r, "R");
     if (data.L.rows() != data.R.rows()) {
         throw std::runtime_error("Marble L and R must have the same number of complementarity rows");
     }
-}
-
-inline MarbleProblemData loadMarbleProblemData(const std::string& dir) {
-    MarbleProblemData data;
-    data.c0 = marble_adapter_detail::loadScalarText(marble_adapter_detail::joinPath(dir, "c0.txt"), "c0");
-    data.Q = marble_adapter_detail::loadMarketSparse(marble_adapter_detail::joinPath(dir, "Q_matrix.mtx"), "Q");
-    data.q = marble_adapter_detail::loadMarketVector(marble_adapter_detail::joinPath(dir, "q_vector.mtx"), "q");
-    data.J_eq = marble_adapter_detail::loadMarketSparse(marble_adapter_detail::joinPath(dir, "J_eq_matrix.mtx"), "J_eq");
-    data.b_eq = marble_adapter_detail::loadMarketVector(marble_adapter_detail::joinPath(dir, "b_eq_vector.mtx"), "b_eq");
-    data.J_ineq = marble_adapter_detail::loadMarketSparse(marble_adapter_detail::joinPath(dir, "J_ineq_matrix.mtx"), "J_ineq");
-    data.b_ineq = marble_adapter_detail::loadMarketVector(marble_adapter_detail::joinPath(dir, "b_ineq_vector.mtx"), "b_ineq");
-    data.L = marble_adapter_detail::loadMarketSparse(marble_adapter_detail::joinPath(dir, "L_matrix.mtx"), "L");
-    data.l = marble_adapter_detail::loadMarketVector(marble_adapter_detail::joinPath(dir, "l_vector.mtx"), "l");
-    data.R = marble_adapter_detail::loadMarketSparse(marble_adapter_detail::joinPath(dir, "R_matrix.mtx"), "R");
-    data.r = marble_adapter_detail::loadMarketVector(marble_adapter_detail::joinPath(dir, "r_vector.mtx"), "r");
-    validateMarbleProblemData(data);
-    return data;
 }
 
 inline std::unique_ptr<OptimizationProblem> makeCrispProblemFromMarbleData(
@@ -162,7 +95,7 @@ inline std::unique_ptr<OptimizationProblem> makeCrispProblemFromMarbleData(
     ad_function_t equality = [shared](const ad_vector_t& x, ad_vector_t& y) {
         y.resize(shared->J_eq.rows());
         for (int row = 0; row < shared->J_eq.rows(); ++row) {
-            y[row] = marble_adapter_detail::sparseDotRow(shared->J_eq, row, x) + shared->b_eq[row];
+            y[row] = marble_adapter_detail::sparseDotRow(shared->J_eq, row, x) + shared->c_eq[row];
         }
     };
 
@@ -172,7 +105,7 @@ inline std::unique_ptr<OptimizationProblem> makeCrispProblemFromMarbleData(
         y.resize(nJ + 3 * ncc);
 
         for (int row = 0; row < nJ; ++row) {
-            y[row] = marble_adapter_detail::sparseDotRow(shared->J_ineq, row, x) + shared->b_ineq[row];
+            y[row] = marble_adapter_detail::sparseDotRow(shared->J_ineq, row, x) + shared->c_ineq[row];
         }
 
         for (int row = 0; row < ncc; ++row) {
@@ -201,16 +134,6 @@ inline std::unique_ptr<OptimizationProblem> makeCrispProblemFromMarbleData(
         problem->addInequalityConstraint(ineq);
     }
     return problem;
-}
-
-inline std::unique_ptr<OptimizationProblem> makeCrispProblemFromMarbleFile(
-    const std::string& dir,
-    const std::string& problemName = "MarbleDataProblem",
-    const std::string& folderName = "model",
-    bool regenerateLibrary = true) {
-
-    return makeCrispProblemFromMarbleData(
-        loadMarbleProblemData(dir), problemName, folderName, regenerateLibrary);
 }
 
 } // namespace CRISP
