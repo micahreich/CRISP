@@ -15,10 +15,10 @@ struct MarbleProblemData {
     scalar_t c0 = 0.0;
 
     sparse_matrix_t J_eq;
-    vector_t c_eq;
+    vector_t b_eq;
 
     sparse_matrix_t J_ineq;
-    vector_t c_ineq;
+    vector_t b_ineq;
 
     sparse_matrix_t L;
     vector_t l;
@@ -59,8 +59,8 @@ inline void validateMarbleProblemData(const MarbleProblemData& data) {
         }
     }
 
-    marble_adapter_detail::validateRows(data.J_eq, data.c_eq, "J_eq");
-    marble_adapter_detail::validateRows(data.J_ineq, data.c_ineq, "J_ineq");
+    marble_adapter_detail::validateRows(data.J_eq, data.b_eq, "J_eq");
+    marble_adapter_detail::validateRows(data.J_ineq, data.b_ineq, "J_ineq");
     marble_adapter_detail::validateRows(data.L, data.l, "L");
     marble_adapter_detail::validateRows(data.R, data.r, "R");
     if (data.L.rows() != data.R.rows()) {
@@ -95,7 +95,7 @@ inline std::unique_ptr<OptimizationProblem> makeCrispProblemFromMarbleData(
     ad_function_t equality = [shared](const ad_vector_t& x, ad_vector_t& y) {
         y.resize(shared->J_eq.rows());
         for (int row = 0; row < shared->J_eq.rows(); ++row) {
-            y[row] = marble_adapter_detail::sparseDotRow(shared->J_eq, row, x) + shared->c_eq[row];
+            y[row] = marble_adapter_detail::sparseDotRow(shared->J_eq, row, x) + shared->b_eq[row];
         }
     };
 
@@ -105,7 +105,7 @@ inline std::unique_ptr<OptimizationProblem> makeCrispProblemFromMarbleData(
         y.resize(nJ + 3 * ncc);
 
         for (int row = 0; row < nJ; ++row) {
-            y[row] = marble_adapter_detail::sparseDotRow(shared->J_ineq, row, x) + shared->c_ineq[row];
+            y[row] = marble_adapter_detail::sparseDotRow(shared->J_ineq, row, x) + shared->b_ineq[row];
         }
 
         for (int row = 0; row < ncc; ++row) {
