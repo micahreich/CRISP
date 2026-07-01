@@ -23,12 +23,8 @@ data = (
     r = [-1.0],
 )
 
-result = CRISP.solve_qpcc_with_crisp(data;
-    trust_region_tol = 1e-4,
-    trail_tol = 1e-4,
-    constraint_tol = 1e-6,
-    verbose = 0,
-)
+# No solver options are passed, so CRISP uses its C++ default parameters.
+result = CRISP.solve_qpcc_with_crisp(data)
 
 @show result.converged
 @show result.x

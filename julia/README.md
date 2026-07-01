@@ -51,11 +51,8 @@ data = (
     R = [0.0 0 0 1], r = [-1.0],             #      complements  x4 - 1 >= 0
 )
 
-result = CRISP.solve_qpcc_with_crisp(data;
-    trust_region_tol = 1e-4,
-    constraint_tol = 1e-6,
-    verbose = 0,
-)
+# No solver options are passed, so CRISP uses its C++ default parameters.
+result = CRISP.solve_qpcc_with_crisp(data)
 
 result.converged   # true
 result.x           # [1.0, 1.0, 0.0, 1.0]
@@ -95,11 +92,20 @@ the solver loop and never includes it.
 
 ### Options
 
-Other solver hyperparameters are snake-case keyword arguments (see
+By default the Julia interface passes **no** solver options: every parameter
+uses CRISP's C++ default (from `SolverParameters::setDefaultParameters`), and
+Julia never overrides a value you did not explicitly set.
+
+To override a parameter, pass it as a snake-case keyword argument (see
 `CRISP.OPTION_NAMES`), e.g. `max_iterations`, `trust_region_init_radius`,
 `trust_region_max_radius`, `mu`, `mu_max`, `eta_low`, `eta_high`, `trail_tol`,
 `trust_region_tol`, `constraint_tol`, `weighted_mode`, `weighted_tol_factor`,
-`second_order_correction`, and `verbose`. Any option not passed keeps CRISP's
-default.
+`second_order_correction`, and `verbose`. Only the options you pass are applied;
+any option not passed keeps CRISP's default.
+
+```julia
+# Override just the two you care about; everything else stays at the C++ default.
+result = CRISP.solve_qpcc_with_crisp(data; max_iterations = 100, verbose = 1)
+```
 
 See `examples/simple_qpcc.jl` for a runnable example.
