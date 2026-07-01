@@ -74,16 +74,22 @@ function solve_qpcc_with_crisp(data::NamedTuple;
     initial = isnothing(x0) ? zeros(length(data.q)) : Vector{Float64}(x0)
     options = _option_values(kwargs)
 
-    result = CRISP._solve_qpcc_with_crisp(
-        data.Q, data.q, data.c0,
-        data.J_eq, data.b_eq,
-        data.J_ineq, data.b_ineq,
-        data.L, data.l,
-        data.R, data.r,
-        initial,
-        String(problem_name), String(folder_name), regenerate_library,
-        options,
-    )
+    # CppAD codegen writes its scratch dirs (cppadcg_tmp/cppadcg_sources) relative
+    # to the process CWD; run from the model folder so they don't land in the caller's.
+    folder = abspath(folder_name)
+    mkpath(folder)
+    result = cd(folder) do
+        CRISP._solve_qpcc_with_crisp(
+            data.Q, data.q, data.c0,
+            data.J_eq, data.b_eq,
+            data.J_ineq, data.b_ineq,
+            data.L, data.l,
+            data.R, data.r,
+            initial,
+            String(problem_name), String(folder), regenerate_library,
+            options,
+        )
+    end
 
     return (
         converged = converged(result),
