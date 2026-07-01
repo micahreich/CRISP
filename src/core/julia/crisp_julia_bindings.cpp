@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <stdexcept>
 #include <string>
@@ -105,7 +106,27 @@ static void apply_solver_options(SolverParameters& params, jlcxx::ArrayRef<doubl
     }
 }
 
-static jlcxx::Array<double> solve_qpcc_with_crisp(jlcxx::ArrayRef<double, 2> Q,
+// Result handed back to Julia. Exposed through per-field getters (registered in
+// the module below) so the Julia side can assemble a clean NamedTuple rather
+// than unpacking a flat, index-addressed array.
+struct CrispResult {
+    bool converged = false;
+    double setup_time_seconds = 0.0;  // problem construction incl. CppAD code generation
+    double solve_time_seconds = 0.0;  // solver loop only (excludes CppAD generation)
+    double qp_time_seconds = 0.0;
+    int iterations = 0;
+    std::vector<double> x;
+};
+
+// Copy a std::vector into a freshly allocated Julia array.
+static jlcxx::Array<double> to_julia(const std::vector<double>& v) {
+    jlcxx::Array<double> out;
+    for (double value : v)
+        out.push_back(value);
+    return out;
+}
+
+static CrispResult solve_qpcc_with_crisp(jlcxx::ArrayRef<double, 2> Q,
                                                   jlcxx::ArrayRef<double, 1> q,
                                                   double c0,
                                                   jlcxx::ArrayRef<double, 2> J_eq,
@@ -130,26 +151,36 @@ static jlcxx::Array<double> solve_qpcc_with_crisp(jlcxx::ArrayRef<double, 2> Q,
     SolverParameters params;
     apply_solver_options(params, option_values);
 
+    // Time the problem construction separately: when regenerate_library is true
+    // this is where CppAD generates and compiles the derivative library, which we
+    // deliberately keep out of the reported solve time.
+    const auto setup_start = std::chrono::high_resolution_clock::now();
     auto problem = makeCrispProblemFromMarbleData(data, problem_name, folder_name, regenerate_library);
+    const auto setup_end = std::chrono::high_resolution_clock::now();
+
     SolverInterface solver(*problem, params);
     solver.initialize(initial);
     solver.solve();
     vector_t solution = solver.getSolutionSilent();
 
-    jlcxx::Array<double> result(solution.size() + 4);
-#if JULIA_VERSION_MAJOR > 1 || (JULIA_VERSION_MAJOR == 1 && JULIA_VERSION_MINOR >= 11)
-    double* result_data = jl_array_data(result.wrapped(), double);
-#else
-    double* result_data = reinterpret_cast<double*>(jl_array_data(result.wrapped()));
-#endif
-    result_data[0] = solver.hasConverged() ? 1.0 : 0.0;
-    result_data[1] = solver.getSolveTimeSeconds();
-    result_data[2] = solver.getQpSolveTimeSeconds();
-    result_data[3] = static_cast<double>(solver.getIterationCount());
-    std::copy(solution.data(), solution.data() + solution.size(), result_data + 4);
+    CrispResult result;
+    result.converged = solver.hasConverged();
+    result.setup_time_seconds = std::chrono::duration<double>(setup_end - setup_start).count();
+    result.solve_time_seconds = solver.getSolveTimeSeconds();
+    result.qp_time_seconds = solver.getQpSolveTimeSeconds();
+    result.iterations = solver.getIterationCount();
+    result.x.assign(solution.data(), solution.data() + solution.size());
     return result;
 }
 
 JLCXX_MODULE define_julia_module(jlcxx::Module& mod) {
+    mod.add_type<CrispResult>("CrispResultCxx")
+        .method("converged", [](const CrispResult& r) { return r.converged; })
+        .method("setup_time_seconds", [](const CrispResult& r) { return r.setup_time_seconds; })
+        .method("solve_time_seconds", [](const CrispResult& r) { return r.solve_time_seconds; })
+        .method("qp_time_seconds", [](const CrispResult& r) { return r.qp_time_seconds; })
+        .method("iterations", [](const CrispResult& r) { return r.iterations; })
+        .method("primal_solution", [](const CrispResult& r) { return to_julia(r.x); });
+
     mod.method("_solve_qpcc_with_crisp", solve_qpcc_with_crisp);
 }

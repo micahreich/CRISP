@@ -6,7 +6,7 @@ using Preferences
 const _libcrisp_julia = @load_preference("libcrisp_julia_path",
     joinpath(@__DIR__, "..", "..", "build", "lib", "libcrisp_julia"))
 
-const DEFAULT_MODEL_FOLDER = abspath(joinpath(@__DIR__, "..", "..", "model"))
+const DEFAULT_MODEL_FOLDER = joinpath(@__DIR__, "..", "..", "model")
 
 @wrapmodule(() -> _libcrisp_julia)
 
@@ -81,7 +81,7 @@ end
 
 function _option_values(kwargs)
     values = fill(NaN, length(OPTION_NAMES))
-    for (name, value) in kwargs
+    for (name, value) in pairs(kwargs)
         index = get(OPTION_INDEX, name, nothing)
         isnothing(index) && throw(ArgumentError("unknown CRISP option: $name"))
         values[index] = Float64(value)
@@ -105,6 +105,11 @@ Solve Marble-form QPCC data with CRISP:
 Solver hyperparameters are accepted as snake-case keyword arguments, for
 example `trust_region_tol`, `trail_tol`, `constraint_tol`, `weighted_mode`,
 and `verbose`.
+
+Returns a NamedTuple `(; converged, x, setup_time_seconds, solve_time_seconds,
+qp_time_seconds, iterations)`. `setup_time_seconds` covers problem construction,
+including CppAD code generation/compilation when `regenerate_library` is `true`;
+`solve_time_seconds` measures only the solver loop and excludes that generation.
 """
 function solve_qpcc_with_crisp(data::NamedTuple;
                                x0=nothing,
@@ -116,7 +121,7 @@ function solve_qpcc_with_crisp(data::NamedTuple;
     initial = isnothing(x0) ? zeros(length(data.q)) : _vec(x0, length(data.q), "x0")
     options = _option_values(kwargs)
 
-    packed_result = CRISP._solve_qpcc_with_crisp(
+    result = CRISP._solve_qpcc_with_crisp(
         data.Q, data.q, data.c0,
         data.J_eq, data.b_eq,
         data.J_ineq, data.b_ineq,
@@ -128,11 +133,12 @@ function solve_qpcc_with_crisp(data::NamedTuple;
     )
 
     return (
-        converged = packed_result[1] != 0.0,
-        x = Vector{Float64}(packed_result[5:end]),
-        solve_time_seconds = packed_result[2],
-        qp_time_seconds = packed_result[3],
-        iterations = Int(round(packed_result[4])),
+        converged = converged(result),
+        x = Vector{Float64}(primal_solution(result)),
+        setup_time_seconds = setup_time_seconds(result),
+        solve_time_seconds = solve_time_seconds(result),
+        qp_time_seconds = qp_time_seconds(result),
+        iterations = Int(iterations(result)),
     )
 end
 
