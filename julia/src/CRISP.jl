@@ -33,52 +33,6 @@ const OPTION_NAMES = (
 
 const OPTION_INDEX = Dict(name => i for (i, name) in pairs(OPTION_NAMES))
 
-_mat(M, rows, cols, name) = begin
-    A = Matrix{Float64}(M)
-    size(A) == (rows, cols) || throw(ArgumentError("$name must have size ($rows, $cols), got $(size(A))"))
-    A
-end
-
-_vec(v, len, name) = begin
-    x = Vector{Float64}(v)
-    length(x) == len || throw(ArgumentError("$name must have length $len, got $(length(x))"))
-    x
-end
-
-function _qpcc_data(data::NamedTuple)
-    q = Vector{Float64}(data.q)
-    n = length(q)
-    Q = _mat(data.Q, n, n, "Q")
-
-    J_eq = Matrix{Float64}(data.J_eq)
-    b_eq = Vector{Float64}(data.b_eq)
-    size(J_eq, 2) == n || throw(ArgumentError("J_eq must have $n columns"))
-    length(b_eq) == size(J_eq, 1) || throw(ArgumentError("b_eq length must match rows of J_eq"))
-
-    J_ineq = Matrix{Float64}(data.J_ineq)
-    b_ineq = Vector{Float64}(data.b_ineq)
-    size(J_ineq, 2) == n || throw(ArgumentError("J_ineq must have $n columns"))
-    length(b_ineq) == size(J_ineq, 1) || throw(ArgumentError("b_ineq length must match rows of J_ineq"))
-
-    L = Matrix{Float64}(data.L)
-    l = Vector{Float64}(data.l)
-    R = Matrix{Float64}(data.R)
-    r = Vector{Float64}(data.r)
-    size(L, 2) == n || throw(ArgumentError("L must have $n columns"))
-    size(R, 2) == n || throw(ArgumentError("R must have $n columns"))
-    size(L, 1) == size(R, 1) || throw(ArgumentError("L and R must have the same number of rows"))
-    length(l) == size(L, 1) || throw(ArgumentError("l length must match rows of L"))
-    length(r) == size(R, 1) || throw(ArgumentError("r length must match rows of R"))
-
-    return (
-        Q = Q, q = q, c0 = Float64(data.c0),
-        J_eq = J_eq, b_eq = b_eq,
-        J_ineq = J_ineq, b_ineq = b_ineq,
-        L = L, l = l,
-        R = R, r = r,
-    )
-end
-
 function _option_values(kwargs)
     values = fill(NaN, length(OPTION_NAMES))
     for (name, value) in pairs(kwargs)
@@ -117,8 +71,7 @@ function solve_qpcc_with_crisp(data::NamedTuple;
                                folder_name::AbstractString=DEFAULT_MODEL_FOLDER,
                                regenerate_library::Bool=true,
                                kwargs...)
-    data = _qpcc_data(data)
-    initial = isnothing(x0) ? zeros(length(data.q)) : _vec(x0, length(data.q), "x0")
+    initial = isnothing(x0) ? zeros(length(data.q)) : Vector{Float64}(x0)
     options = _option_values(kwargs)
 
     result = CRISP._solve_qpcc_with_crisp(
